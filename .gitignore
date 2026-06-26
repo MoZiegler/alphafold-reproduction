@@ -1,0 +1,85 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# Local Jupyter/IPython state
+.jupyter-config/
+.jupyter-data/
+.jupyter-runtime/
+.ipython/
+
+# Large/generated project artifacts
+data/**
+models/**
+results/**
+runs/**
+
+# Keep lightweight placeholders or docs if we add them later
+!data/**/.gitkeep
+!data/**/README.md
+!models/**/.gitkeep
+!models/**/README.md
+!results/**/.gitkeep
+!results/**/README.md
+!runs/**/.gitkeep
+!runs/**/README.md
+
+# Model checkpoints and scientific binary data, wherever they appear
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.pkl
+*.pickle
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.parquet
+*.arrow
+*.fa
+*.fasta
+*.a3m
+*.sto
+*.pdb
+*.cif
+*.mmcif
+*.sdf
+*.mol2
+
+# Archives and downloaded database chunks
+*.gz
+*.bz2
+*.xz
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Cluster/runtime logs
+*.log
+*.out
+*.err
+slurm-*.out
+
+# Executed/generated notebook copies
+*_executed.ipynb
+executed.ipynb
+smoke_executed.ipynb
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Codex/agent-local state
+.agents/

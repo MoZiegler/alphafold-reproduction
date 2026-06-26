@@ -1,0 +1,10 @@
+torch
+numpy
+scipy
+pandas
+pyarrow
+matplotlib
+tqdm
+ipywidgets
+ipykernel
+rdkit
