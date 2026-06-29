@@ -419,6 +419,298 @@ jupyter nbconvert --to notebook --execute 01_Senior_2020_AlphaFold_CASP13_Reprod
 """, encoding="utf-8")
 print(slurm.read_text(encoding="utf-8"))
 '''),
+        md(r'''
+## Step 7 - Example-protein comparison against structures and Senior predictions
+
+This section turns a training run into a scientific comparison on concrete proteins. The next cells load three structures for each target: the experimental reference, our model prediction, and the Senior et al. paper prediction. If you have the paper predictions as PDB files, place them under `data/senior_2020/senior_paper_predictions/` or `results/senior_2020/senior_paper_predictions/` with filenames that contain the target id.
+
+Scientifically, this is the first honest visual and numerical test of whether our reproduction is learning the same geometric signal as Senior et al. A loss curve can improve while structures remain wrong; a structure comparison exposes fold-level failures, long-range-contact errors, and coordinate artifacts.
+
+Computationally, we parse C-alpha traces from PDB files, align predicted traces to the experimental trace with the Kabsch algorithm, and compute simple metrics. Mathematically, Kabsch solves `argmin_R,t ||R X_hat + t - X||_F` over rotations and translations. We then compare aligned coordinates, distance matrices `D_ij`, and contact maps so both coordinate-level and topology-level errors are visible.
+'''),
+        code(r'''
+import matplotlib.pyplot as plt
+import pandas as pd
+
+COMPARISON_MANIFEST = DATA_DIR / "comparison_targets.json"
+PLOT_DIR = RESULT_DIR / "plots"
+PLOT_DIR.mkdir(parents=True, exist_ok=True)
+PAPER_PREDICTION_DIRS = [
+    DATA_DIR / "senior_paper_predictions",
+    RESULT_DIR / "senior_paper_predictions",
+]
+TRUTH_DIRS = [
+    DATA_DIR / "raw" / "casp13_targets",
+    DATA_DIR / "casp13_targets",
+    DATA_DIR / "truth",
+]
+OUR_PREDICTION_DIRS = [
+    RESULT_DIR / "structures",
+    RESULT_DIR / "predictions",
+]
+
+def candidate_structure_files(target_id: str, roots: list[Path]) -> list[Path]:
+    suffixes = ["*.pdb", "*.ent", "*.cif", "*.mmcif"]
+    matches = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for suffix in suffixes:
+            matches.extend(root.rglob(f"*{target_id}*{suffix[1:]}"))
+            target_dir = root / target_id
+            if target_dir.exists():
+                matches.extend(target_dir.glob(suffix))
+    return sorted(set(p for p in matches if p.is_file()))
+
+if not COMPARISON_MANIFEST.exists():
+    example = [
+        {
+            "target_id": "T0986s2",
+            "truth_pdb": "data/senior_2020/raw/casp13_targets/T0986s2.pdb",
+            "ours_pdb": "results/senior_2020/structures/T0986s2/model_0.pdb",
+            "senior_paper_pdb": "data/senior_2020/senior_paper_predictions/T0986s2.pdb",
+        }
+    ]
+    write_text(COMPARISON_MANIFEST, json.dumps(example, indent=2))
+    print(f"Wrote example comparison manifest: {COMPARISON_MANIFEST}")
+
+comparison_rows = json.loads(COMPARISON_MANIFEST.read_text(encoding="utf-8"))
+print(json.dumps(comparison_rows, indent=2))
+'''),
+        code(r'''
+def parse_ca_pdb(path: Path):
+    rows = []
+    for line in path.read_text(errors="ignore").splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")):
+            continue
+        atom = line[12:16].strip()
+        if atom != "CA":
+            continue
+        altloc = line[16].strip()
+        if altloc not in {"", "A"}:
+            continue
+        try:
+            chain = line[21].strip() or "_"
+            resseq = int(line[22:26])
+            icode = line[26].strip()
+            coord = np.array([float(line[30:38]), float(line[38:46]), float(line[46:54])], dtype=np.float64)
+        except ValueError:
+            continue
+        rows.append({"key": (chain, resseq, icode), "chain": chain, "resseq": resseq, "coord": coord})
+    return rows
+
+def paired_ca_coords(reference_path: Path, prediction_path: Path):
+    ref_rows = parse_ca_pdb(reference_path)
+    pred_rows = parse_ca_pdb(prediction_path)
+    ref_by_key = {r["key"]: r["coord"] for r in ref_rows}
+    pred_by_key = {r["key"]: r["coord"] for r in pred_rows}
+    common = [r["key"] for r in ref_rows if r["key"] in pred_by_key]
+    if len(common) >= 3:
+        return np.stack([ref_by_key[k] for k in common]), np.stack([pred_by_key[k] for k in common]), common
+    n = min(len(ref_rows), len(pred_rows))
+    if n < 3:
+        raise ValueError(f"Need at least 3 paired C-alpha atoms: {reference_path}, {prediction_path}")
+    return np.stack([r["coord"] for r in ref_rows[:n]]), np.stack([r["coord"] for r in pred_rows[:n]]), [r["key"] for r in ref_rows[:n]]
+
+def kabsch_align(mobile: np.ndarray, target: np.ndarray):
+    mobile_center = mobile.mean(axis=0)
+    target_center = target.mean(axis=0)
+    X = mobile - mobile_center
+    Y = target - target_center
+    C = X.T @ Y
+    V, _, Wt = np.linalg.svd(C)
+    d = np.sign(np.linalg.det(V @ Wt))
+    R = V @ np.diag([1.0, 1.0, d]) @ Wt
+    return X @ R + target_center
+
+def distance_matrix(coords: np.ndarray):
+    diff = coords[:, None, :] - coords[None, :, :]
+    return np.sqrt((diff * diff).sum(axis=-1))
+
+def structure_metrics(reference: np.ndarray, prediction: np.ndarray):
+    aligned = kabsch_align(prediction, reference)
+    per_residue_error = np.linalg.norm(aligned - reference, axis=-1)
+    rmsd = float(np.sqrt(np.mean(per_residue_error ** 2)))
+    L = len(reference)
+    d0 = max(0.5, 1.24 * max(L - 15, 1) ** (1 / 3) - 1.8)
+    tm_like = float(np.mean(1.0 / (1.0 + (per_residue_error / d0) ** 2)))
+    gdt_ts_like = float(np.mean([np.mean(per_residue_error <= t) for t in [1.0, 2.0, 4.0, 8.0]]))
+    ref_d = distance_matrix(reference)
+    pred_d = distance_matrix(aligned)
+    sep_mask = np.triu(np.ones((L, L), dtype=bool), k=6)
+    dist_mae = float(np.mean(np.abs(ref_d[sep_mask] - pred_d[sep_mask]))) if sep_mask.any() else np.nan
+    ref_contacts = (ref_d < 8.0) & sep_mask
+    pred_contacts = (pred_d < 8.0) & sep_mask
+    contact_precision = float((ref_contacts & pred_contacts).sum() / max(pred_contacts.sum(), 1))
+    contact_recall = float((ref_contacts & pred_contacts).sum() / max(ref_contacts.sum(), 1))
+    return {
+        "aligned": aligned,
+        "per_residue_error": per_residue_error,
+        "rmsd_ca": rmsd,
+        "tm_like": tm_like,
+        "gdt_ts_like": gdt_ts_like,
+        "distance_mae_long_range": dist_mae,
+        "contact_precision_8A": contact_precision,
+        "contact_recall_8A": contact_recall,
+        "reference_distance": ref_d,
+        "prediction_distance": pred_d,
+    }
+
+def resolve_comparison_paths(row: dict):
+    target_id = row["target_id"]
+    truth = Path(row.get("truth_pdb", ""))
+    ours = Path(row.get("ours_pdb", ""))
+    senior = Path(row.get("senior_paper_pdb", ""))
+    if not truth.exists():
+        candidates = candidate_structure_files(target_id, TRUTH_DIRS)
+        truth = candidates[0] if candidates else truth
+    if not ours.exists():
+        candidates = candidate_structure_files(target_id, OUR_PREDICTION_DIRS)
+        ours = candidates[0] if candidates else ours
+    if not senior.exists():
+        candidates = candidate_structure_files(target_id, PAPER_PREDICTION_DIRS)
+        senior = candidates[0] if candidates else senior
+    return truth, ours, senior
+'''),
+        code(r'''
+comparison_records = []
+comparison_payloads = {}
+
+for row in comparison_rows:
+    target_id = row["target_id"]
+    truth_path, ours_path, senior_path = resolve_comparison_paths(row)
+    print(f"\nTarget {target_id}")
+    print("  truth :", truth_path, truth_path.exists())
+    print("  ours  :", ours_path, ours_path.exists())
+    print("  Senior:", senior_path, senior_path.exists())
+    if not truth_path.exists() or not ours_path.exists():
+        print("  Skipping: need at least truth_pdb and ours_pdb.")
+        continue
+
+    reference, ours_coords, _ = paired_ca_coords(truth_path, ours_path)
+    ours_metrics = structure_metrics(reference, ours_coords)
+    comparison_records.append({
+        "target_id": target_id,
+        "method": "ours",
+        "n_residues": len(reference),
+        **{k: v for k, v in ours_metrics.items() if isinstance(v, float)},
+    })
+    comparison_payloads[(target_id, "ours")] = {"reference": reference, "prediction": ours_metrics["aligned"], **ours_metrics}
+
+    if senior_path.exists():
+        reference_s, senior_coords, _ = paired_ca_coords(truth_path, senior_path)
+        senior_metrics = structure_metrics(reference_s, senior_coords)
+        comparison_records.append({
+            "target_id": target_id,
+            "method": "Senior et al.",
+            "n_residues": len(reference_s),
+            **{k: v for k, v in senior_metrics.items() if isinstance(v, float)},
+        })
+        comparison_payloads[(target_id, "Senior et al.")] = {"reference": reference_s, "prediction": senior_metrics["aligned"], **senior_metrics}
+
+metrics_df = pd.DataFrame(comparison_records)
+metrics_path = paths["metrics"] / "example_structure_comparison.csv"
+if not metrics_df.empty:
+    metrics_df.to_csv(metrics_path, index=False)
+    display(metrics_df.sort_values(["target_id", "method"]))
+    print(f"Saved metrics to {metrics_path}")
+else:
+    print("No complete comparisons found yet. Fill comparison_targets.json or place PDB files in the documented folders.")
+'''),
+        code(r'''
+def plot_ca_trace(ax, coords: np.ndarray, title: str, color: str):
+    ax.plot(coords[:, 0], coords[:, 1], coords[:, 2], color=color, linewidth=1.6)
+    ax.scatter(coords[0, 0], coords[0, 1], coords[0, 2], color=color, s=30, marker="o")
+    ax.scatter(coords[-1, 0], coords[-1, 1], coords[-1, 2], color=color, s=30, marker="x")
+    ax.set_title(title)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_zlabel("z")
+
+def plot_target_comparison(target_id: str):
+    methods = [m for (tid, m) in comparison_payloads if tid == target_id]
+    if not methods:
+        print(f"No payloads for {target_id}")
+        return
+
+    fig = plt.figure(figsize=(5 * (len(methods) + 1), 4.5))
+    reference = comparison_payloads[(target_id, methods[0])]["reference"]
+    ax = fig.add_subplot(1, len(methods) + 1, 1, projection="3d")
+    plot_ca_trace(ax, reference, f"{target_id} experimental", "black")
+    for idx, method in enumerate(methods, start=2):
+        payload = comparison_payloads[(target_id, method)]
+        ax = fig.add_subplot(1, len(methods) + 1, idx, projection="3d")
+        plot_ca_trace(ax, payload["reference"], "reference", "lightgray")
+        plot_ca_trace(ax, payload["prediction"], method, "tab:blue" if method == "ours" else "tab:orange")
+    fig.tight_layout()
+    fig.savefig(PLOT_DIR / f"{target_id}_ca_trace_comparison.png", dpi=200, bbox_inches="tight")
+    plt.show()
+
+    fig, axes = plt.subplots(len(methods), 3, figsize=(13, 4 * len(methods)), squeeze=False)
+    for row_idx, method in enumerate(methods):
+        payload = comparison_payloads[(target_id, method)]
+        ref_d = payload["reference_distance"]
+        pred_d = payload["prediction_distance"]
+        err_d = np.abs(ref_d - pred_d)
+        for ax, mat, title in [
+            (axes[row_idx, 0], ref_d, "experimental distance map"),
+            (axes[row_idx, 1], pred_d, f"{method} distance map"),
+            (axes[row_idx, 2], err_d, f"{method} |distance error|"),
+        ]:
+            im = ax.imshow(mat, cmap="viridis" if "error" not in title else "magma")
+            ax.set_title(f"{target_id}: {title}")
+            ax.set_xlabel("residue")
+            ax.set_ylabel("residue")
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    fig.savefig(PLOT_DIR / f"{target_id}_distance_maps.png", dpi=200, bbox_inches="tight")
+    plt.show()
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    for method in methods:
+        payload = comparison_payloads[(target_id, method)]
+        ax.plot(payload["per_residue_error"], label=method)
+    ax.set_title(f"{target_id}: per-residue C-alpha error after Kabsch alignment")
+    ax.set_xlabel("paired residue index")
+    ax.set_ylabel("error (Angstrom)")
+    ax.legend()
+    ax.grid(alpha=0.25)
+    fig.savefig(PLOT_DIR / f"{target_id}_per_residue_error.png", dpi=200, bbox_inches="tight")
+    plt.show()
+
+if not metrics_df.empty:
+    for target_id in metrics_df["target_id"].unique():
+        plot_target_comparison(target_id)
+'''),
+        code(r'''
+if not metrics_df.empty:
+    score_cols = ["rmsd_ca", "tm_like", "gdt_ts_like", "distance_mae_long_range", "contact_precision_8A", "contact_recall_8A"]
+    available_score_cols = [c for c in score_cols if c in metrics_df.columns]
+    for metric in available_score_cols:
+        pivot = metrics_df.pivot(index="target_id", columns="method", values=metric)
+        ax = pivot.plot(kind="bar", figsize=(10, 4), rot=45)
+        ax.set_title(f"Our Senior reproduction vs Senior et al.: {metric}")
+        ax.set_ylabel(metric)
+        ax.grid(axis="y", alpha=0.25)
+        plt.tight_layout()
+        plt.savefig(PLOT_DIR / f"method_comparison_{metric}.png", dpi=200, bbox_inches="tight")
+        plt.show()
+
+    if {"ours", "Senior et al."}.issubset(set(metrics_df["method"])):
+        paired = metrics_df.pivot(index="target_id", columns="method", values="tm_like").dropna()
+        if not paired.empty:
+            paired["ours_minus_senior"] = paired["ours"] - paired["Senior et al."]
+            colors = np.where(paired["ours_minus_senior"] >= 0, "tab:green", "tab:red")
+            ax = paired["ours_minus_senior"].plot(kind="bar", figsize=(10, 3), color=colors)
+            ax.axhline(0, color="black", linewidth=1)
+            ax.set_title("TM-like delta: ours minus Senior et al.")
+            ax.set_ylabel("delta")
+            ax.grid(axis="y", alpha=0.25)
+            plt.tight_layout()
+            plt.savefig(PLOT_DIR / "ours_minus_senior_tm_like_delta.png", dpi=200, bbox_inches="tight")
+            plt.show()
+            display(paired)
+'''),
     ])
 
 
