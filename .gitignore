@@ -83,3 +83,6 @@ Thumbs.db
 
 # Codex/agent-local state
 .agents/
+
+#github
+PAT.txt
