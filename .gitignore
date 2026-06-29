@@ -1,3 +1,6 @@
+# Jupiter slurm interface
+jupyter-*.out
+
 # Python caches and local environments
 __pycache__/
 *.py[cod]
