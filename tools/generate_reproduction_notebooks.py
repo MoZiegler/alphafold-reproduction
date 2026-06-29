@@ -431,10 +431,12 @@ Computationally, we parse C-alpha traces from PDB files, align predicted traces 
         code(r'''
 import matplotlib.pyplot as plt
 import pandas as pd
+from urllib.request import urlretrieve
 
 COMPARISON_MANIFEST = DATA_DIR / "comparison_targets.json"
 PLOT_DIR = RESULT_DIR / "plots"
 PLOT_DIR.mkdir(parents=True, exist_ok=True)
+COMPARISON_TEMPLATE = DATA_DIR / "comparison_targets.template.json"
 PAPER_PREDICTION_DIRS = [
     DATA_DIR / "senior_paper_predictions",
     RESULT_DIR / "senior_paper_predictions",
@@ -462,20 +464,127 @@ def candidate_structure_files(target_id: str, roots: list[Path]) -> list[Path]:
                 matches.extend(target_dir.glob(suffix))
     return sorted(set(p for p in matches if p.is_file()))
 
-if not COMPARISON_MANIFEST.exists():
-    example = [
-        {
-            "target_id": "T0986s2",
-            "truth_pdb": "data/senior_2020/raw/casp13_targets/T0986s2.pdb",
-            "ours_pdb": "results/senior_2020/structures/T0986s2/model_0.pdb",
-            "senior_paper_pdb": "data/senior_2020/senior_paper_predictions/T0986s2.pdb",
-        }
-    ]
-    write_text(COMPARISON_MANIFEST, json.dumps(example, indent=2))
-    print(f"Wrote example comparison manifest: {COMPARISON_MANIFEST}")
+def all_structure_files(roots: list[Path]) -> list[Path]:
+    files = []
+    for root in roots:
+        if root.exists():
+            for suffix in ["*.pdb", "*.ent", "*.cif", "*.mmcif"]:
+                files.extend(root.rglob(suffix))
+    return sorted(set(p for p in files if p.is_file()))
 
-comparison_rows = json.loads(COMPARISON_MANIFEST.read_text(encoding="utf-8"))
+def rough_target_id(path: Path) -> str:
+    # Prefer the containing target folder when present; otherwise use the stem.
+    if path.parent.name not in {"structures", "predictions", "casp13_targets", "truth", "senior_paper_predictions", "raw"}:
+        return path.parent.name
+    stem = path.stem
+    for token in [".", "_model", "_rank", "_prediction", "_pred", "_native", "_truth"]:
+        stem = stem.split(token)[0]
+    return stem
+
+def discover_comparison_rows() -> list[dict]:
+    truth_files = all_structure_files(TRUTH_DIRS)
+    ours_files = all_structure_files(OUR_PREDICTION_DIRS)
+    senior_files = all_structure_files(PAPER_PREDICTION_DIRS)
+    truth_by_id = {rough_target_id(p): p for p in truth_files}
+    ours_by_id = {rough_target_id(p): p for p in ours_files}
+    senior_by_id = {rough_target_id(p): p for p in senior_files}
+    target_ids = sorted(set(truth_by_id) & set(ours_by_id))
+    rows = []
+    for target_id in target_ids:
+        rows.append({
+            "target_id": target_id,
+            "truth_pdb": str(truth_by_id[target_id]),
+            "ours_pdb": str(ours_by_id[target_id]),
+            "senior_paper_pdb": str(senior_by_id.get(target_id, "")),
+        })
+    return rows
+
+template_rows = [
+    {
+        "target_id": "replace_with_target_id",
+        "truth_pdb_id": "optional_rcsb_pdb_id",
+        "truth_url": "optional_direct_download_url",
+        "ours_url": "optional_direct_download_url",
+        "senior_paper_url": "optional_direct_download_url",
+        "truth_pdb": "data/senior_2020/raw/casp13_targets/replace_with_target_id.pdb",
+        "ours_pdb": "results/senior_2020/structures/replace_with_target_id/model_0.pdb",
+        "senior_paper_pdb": "data/senior_2020/senior_paper_predictions/replace_with_target_id.pdb"
+    }
+]
+write_text(COMPARISON_TEMPLATE, json.dumps(template_rows, indent=2))
+
+if COMPARISON_MANIFEST.exists():
+    comparison_rows = json.loads(COMPARISON_MANIFEST.read_text(encoding="utf-8"))
+    print(f"Loaded comparison manifest: {COMPARISON_MANIFEST}")
+else:
+    comparison_rows = discover_comparison_rows()
+    if comparison_rows:
+        write_text(COMPARISON_MANIFEST, json.dumps(comparison_rows, indent=2))
+        print(f"Discovered comparison files and wrote: {COMPARISON_MANIFEST}")
+    else:
+        print("No complete truth+ours PDB pairs were discovered, so no plots can be made yet.")
+        print("Put experimental structures in one of:")
+        for p in TRUTH_DIRS:
+            print("  truth:", p)
+        print("Put our predicted structures in one of:")
+        for p in OUR_PREDICTION_DIRS:
+            print("  ours :", p)
+        print("Optional Senior et al. prediction PDBs go in one of:")
+        for p in PAPER_PREDICTION_DIRS:
+            print("  senior:", p)
+        print(f"Template manifest written to: {COMPARISON_TEMPLATE}")
+
+print("Comparison rows:")
 print(json.dumps(comparison_rows, indent=2))
+'''),
+        code(r'''
+def download_if_missing(url: str | None, destination: Path) -> bool:
+    if not url or str(url).startswith("optional_"):
+        return False
+    if destination.exists() and destination.stat().st_size > 0:
+        return True
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading {url} -> {destination}")
+    urlretrieve(url, destination)
+    return destination.exists() and destination.stat().st_size > 0
+
+def download_rcsb_pdb_if_missing(pdb_id: str | None, destination: Path) -> bool:
+    if not pdb_id or str(pdb_id).startswith("optional_"):
+        return False
+    pdb_id = pdb_id.strip().lower()
+    return download_if_missing(f"https://files.rcsb.org/download/{pdb_id}.pdb", destination)
+
+def materialize_comparison_inputs(rows: list[dict]) -> list[dict]:
+    materialized = []
+    for row in rows:
+        row = dict(row)
+        target_id = row["target_id"]
+        truth_path = Path(row.get("truth_pdb") or (DATA_DIR / "raw" / "casp13_targets" / f"{target_id}.pdb"))
+        ours_path = Path(row.get("ours_pdb") or (RESULT_DIR / "structures" / target_id / "model_0.pdb"))
+        senior_path = Path(row.get("senior_paper_pdb") or (DATA_DIR / "senior_paper_predictions" / f"{target_id}.pdb"))
+
+        if not truth_path.exists():
+            download_rcsb_pdb_if_missing(row.get("truth_pdb_id"), truth_path)
+        if not truth_path.exists():
+            download_if_missing(row.get("truth_url"), truth_path)
+        if not ours_path.exists():
+            download_if_missing(row.get("ours_url"), ours_path)
+        if not senior_path.exists():
+            download_if_missing(row.get("senior_paper_url"), senior_path)
+
+        row["truth_pdb"] = str(truth_path)
+        row["ours_pdb"] = str(ours_path)
+        row["senior_paper_pdb"] = str(senior_path)
+        materialized.append(row)
+
+    return materialized
+
+comparison_rows = materialize_comparison_inputs(comparison_rows)
+if comparison_rows:
+    write_text(COMPARISON_MANIFEST, json.dumps(comparison_rows, indent=2))
+    print(f"Updated local comparison manifest: {COMPARISON_MANIFEST}")
+else:
+    print("No comparison rows to download. Add rows to the manifest template first.")
 '''),
         code(r'''
 def parse_ca_pdb(path: Path):
@@ -615,7 +724,9 @@ if not metrics_df.empty:
     display(metrics_df.sort_values(["target_id", "method"]))
     print(f"Saved metrics to {metrics_path}")
 else:
-    print("No complete comparisons found yet. Fill comparison_targets.json or place PDB files in the documented folders.")
+    print("No complete comparisons found yet.")
+    print(f"Edit {COMPARISON_MANIFEST} using {COMPARISON_TEMPLATE} as a template, or place matching PDB files in the documented folders and rerun this section.")
+    print("A complete row needs at least target_id, truth_pdb, and ours_pdb. senior_paper_pdb is optional.")
 '''),
         code(r'''
 def plot_ca_trace(ax, coords: np.ndarray, title: str, color: str):
