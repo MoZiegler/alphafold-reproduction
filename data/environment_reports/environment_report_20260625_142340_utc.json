@@ -1,0 +1,185 @@
+{
+  "created_utc": "2026-06-25T14:23:29.090144+00:00",
+  "project_root": "/workspace",
+  "python": {
+    "python_version": "3.10.12 (main, Mar  3 2026, 11:56:32) [GCC 11.4.0]",
+    "python_executable": "/app/.venv/bin/python",
+    "platform": "Linux-4.18.0-553.100.1.el8_10.x86_64-x86_64-with-glibc2.35",
+    "machine": "x86_64",
+    "processor": "x86_64",
+    "hostname": "gpu0203",
+    "cwd": "/workspace",
+    "site_packages": [
+      "/app/.venv/lib/python3.10/site-packages",
+      "/app/.venv/local/lib/python3.10/dist-packages",
+      "/app/.venv/lib/python3/dist-packages",
+      "/app/.venv/lib/python3.10/dist-packages"
+    ],
+    "user_site": "/home/mziegle/.local/lib/python3.10/site-packages"
+  },
+  "environment_variables": {
+    "CUDA_VISIBLE_DEVICES": "0",
+    "NVIDIA_VISIBLE_DEVICES": "all",
+    "PATH": "/usr/local/bin:/app/.venv/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/mziegle/.local/bin:/home/mziegle/bin",
+    "LD_LIBRARY_PATH": "/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/.singularity.d/libs",
+    "SLURM_JOB_ID": "349373",
+    "SLURM_JOB_NAME": "jupyter-course",
+    "SLURM_NODELIST": "gpu0203",
+    "SLURM_GPUS_ON_NODE": "1",
+    "SLURM_CPUS_PER_TASK": "4"
+  },
+  "requirements": {
+    "torch": {
+      "required_line": "torch",
+      "installed": true,
+      "version": "2.10.0+cu126"
+    },
+    "torch_geometric": {
+      "required_line": "torch_geometric",
+      "installed": false,
+      "version": null
+    },
+    "ipywidgets": {
+      "required_line": "ipywidgets",
+      "installed": true,
+      "version": "8.1.8"
+    },
+    "ipykernel": {
+      "required_line": "ipykernel",
+      "installed": true,
+      "version": "7.2.0"
+    },
+    "matplotlib": {
+      "required_line": "matplotlib",
+      "installed": true,
+      "version": "3.10.8"
+    },
+    "numpy": {
+      "required_line": "numpy",
+      "installed": true,
+      "version": "2.2.6"
+    },
+    "scipy": {
+      "required_line": "scipy",
+      "installed": true,
+      "version": "1.15.3"
+    },
+    "networkx": {
+      "required_line": "networkx",
+      "installed": true,
+      "version": "3.4.2"
+    },
+    "rdkit": {
+      "required_line": "rdkit",
+      "installed": false,
+      "version": null
+    },
+    "cython": {
+      "required_line": "cython",
+      "installed": false,
+      "version": null
+    },
+    "tqdm": {
+      "required_line": "tqdm",
+      "installed": true,
+      "version": "4.67.3"
+    },
+    "pandas": {
+      "required_line": "pandas",
+      "installed": true,
+      "version": "2.3.3"
+    },
+    "pyarrow": {
+      "required_line": "pyarrow",
+      "installed": true,
+      "version": "23.0.1"
+    }
+  },
+  "tool_paths": {
+    "nvidia-smi": "/usr/bin/nvidia-smi",
+    "nvcc": "/usr/local/cuda/bin/nvcc",
+    "gcc": "/usr/bin/gcc",
+    "g++": "/usr/bin/g++"
+  },
+  "cuda_commands": {
+    "nvidia_smi_summary": {
+      "cmd": [
+        "nvidia-smi",
+        "--query-gpu=index,name,driver_version,memory.total,memory.free,compute_cap,pci.bus_id",
+        "--format=csv,noheader"
+      ],
+      "returncode": 0,
+      "stdout": "0, NVIDIA A100-SXM4-80GB, 590.48.01, 81920 MiB, 81153 MiB, 8.0, 00000000:83:00.0",
+      "stderr": ""
+    },
+    "nvidia_smi_full": {
+      "cmd": [
+        "nvidia-smi"
+      ],
+      "returncode": 0,
+      "stdout": "Thu Jun 25 16:23:29 2026       \n+-----------------------------------------------------------------------------------------+\n| NVIDIA-SMI 590.48.01              Driver Version: 590.48.01      CUDA Version: 13.1     |\n+-----------------------------------------+------------------------+----------------------+\n| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |\n| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |\n|                                         |                        |               MIG M. |\n|=========================================+========================+======================|\n|   0  NVIDIA A100-SXM4-80GB          On  |   00000000:83:00.0 Off |                    0 |\n| N/A   37C    P0             67W /  400W |       0MiB /  81920MiB |      0%      Default |\n|                                         |                        |             Disabled |\n+-----------------------------------------+------------------------+----------------------+\n\n+-----------------------------------------------------------------------------------------+\n| Processes:                                                                              |\n|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |\n|        ID   ID                                                               Usage      |\n|=========================================================================================|\n|  No running processes found                                                             |\n+-----------------------------------------------------------------------------------------+",
+      "stderr": ""
+    },
+    "nvcc_version": {
+      "cmd": [
+        "nvcc",
+        "--version"
+      ],
+      "returncode": 0,
+      "stdout": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2024 NVIDIA Corporation\nBuilt on Tue_Oct_29_23:50:19_PDT_2024\nCuda compilation tools, release 12.6, V12.6.85\nBuild cuda_12.6.r12.6/compiler.35059454_0",
+      "stderr": ""
+    }
+  },
+  "torch": {
+    "import_ok": true,
+    "torch_version": "2.10.0+cu126",
+    "torch_cuda_build": "12.6",
+    "cuda_available": true,
+    "cuda_device_count": 1,
+    "cudnn_available": true,
+    "cudnn_version": 91002,
+    "devices": [
+      {
+        "index": 0,
+        "name": "NVIDIA A100-SXM4-80GB",
+        "total_memory_gb": 79.251,
+        "major": 8,
+        "minor": 0,
+        "multi_processor_count": 108
+      }
+    ]
+  },
+  "gpu_smoke_test": {
+    "ran": true,
+    "device": "NVIDIA A100-SXM4-80GB",
+    "dtype": "torch.float16",
+    "matrix_size": 4096,
+    "repeats": 8,
+    "elapsed_seconds": 0.5518286842852831,
+    "approx_tflops": 1.992,
+    "max_memory_allocated_gb": 0.133,
+    "sample_value": -74.0625
+  },
+  "torch_geometric_smoke_test": {
+    "import_ok": false,
+    "ran": false,
+    "error": "ModuleNotFoundError(\"No module named 'torch_geometric'\")"
+  },
+  "rdkit_smoke_test": {
+    "import_ok": false,
+    "ran": false,
+    "error": "ModuleNotFoundError(\"No module named 'rdkit'\")"
+  },
+  "system_snapshot": {
+    "cpu_count_logical": 128,
+    "project_disk_usage": {
+      "total_gb": 34048.0,
+      "used_gb": 14285.572,
+      "free_gb": 19762.428
+    },
+    "psutil_version": "7.2.2",
+    "cpu_count_physical": 128,
+    "ram_total_gb": 2015.696,
+    "ram_available_gb": 1970.618
+  }
+}

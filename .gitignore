@@ -20,10 +20,10 @@ env/
 .ipython/
 
 # Large/generated project artifacts
-data/**
-models/**
-results/**
-runs/**
+# data/**
+# models/**
+# results/**
+# runs/**
 
 # Keep lightweight placeholders or docs if we add them later
 !data/**/.gitkeep
