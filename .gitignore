@@ -52,7 +52,7 @@ env/
 *.fasta
 *.a3m
 *.sto
-*.pdb
+#*.pdb
 *.cif
 *.mmcif
 *.sdf
