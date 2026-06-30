@@ -1,6 +1,10 @@
 [
   {
     "target_id": "T0986s2",
+    "truth_pdb_id": "6D7Y",
+    "truth_url": "",
+    "ours_url": "",
+    "senior_paper_url": "https://predictioncenter.org/casp13/MODELS_PDB/T0986s2-D1/T0986s2TS043_1-D1.pdb",
     "truth_pdb": "data/senior_2020/raw/casp13_targets/T0986s2.pdb",
     "ours_pdb": "results/senior_2020/structures/T0986s2/model_0.pdb",
     "senior_paper_pdb": "data/senior_2020/senior_paper_predictions/T0986s2.pdb"
