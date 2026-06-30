@@ -1,0 +1,17 @@
+[
+  {
+    "name": "senior_faithful_resnet_distogram",
+    "faithful": true,
+    "change": "paper-era data, own residual distogram model"
+  },
+  {
+    "name": "senior_modern_msa",
+    "faithful": false,
+    "change": "new sequence databases"
+  },
+  {
+    "name": "senior_af2_prior_potential",
+    "faithful": false,
+    "change": "AF2-like prior in coordinate optimizer"
+  }
+]

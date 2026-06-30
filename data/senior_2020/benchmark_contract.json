@@ -1,0 +1,10 @@
+{
+  "paper": "Senior et al. 2020",
+  "benchmark": "CASP13 free modelling domains",
+  "template_cutoff": "2018-03-15",
+  "cath_cutoff": "2018-03-16",
+  "uniclust30_version": "2017-10",
+  "nr_snapshot": "2017-12-15",
+  "implementation": "own_pytorch",
+  "uses_official_weights_or_api": false
+}

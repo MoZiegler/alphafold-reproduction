@@ -1,0 +1,12 @@
+[
+  {
+    "target_id": "replace_with_target_id",
+    "truth_pdb_id": "optional_rcsb_pdb_id",
+    "truth_url": "optional_direct_download_url",
+    "ours_url": "optional_direct_download_url",
+    "senior_paper_url": "optional_direct_download_url",
+    "truth_pdb": "data/senior_2020/raw/casp13_targets/replace_with_target_id.pdb",
+    "ours_pdb": "results/senior_2020/structures/replace_with_target_id/model_0.pdb",
+    "senior_paper_pdb": "data/senior_2020/senior_paper_predictions/replace_with_target_id.pdb"
+  }
+]
