@@ -153,6 +153,27 @@ All input data and trained checkpoints are ours:
 
 No official AlphaFold API, Docker runner, model parameters, or inference script is used.
 '''),
+        md(r'''
+## Extended Data Fig. 1 Reproduction Checklist
+
+This checklist maps the notebook against the Senior et al. AlphaFold method schematic in Extended Data Fig. 1. It is deliberately strict: a checked item means the notebook has an executable implementation of that step in our own PyTorch/data code; a partial item means the notebook has the interface or simplified analogue but not the faithful paper-level implementation yet.
+
+| Extended Data Fig. 1 component | Status | Notebook coverage | What remains for faithful reproduction |
+|---|---:|---|---|
+| CASP-era information boundary | Implemented | `benchmark_contract.json` records CASP13 target family, template cutoff, CATH cutoff, and database snapshot labels. | Replace labels with verified downloaded database manifests and checksums. |
+| Sequence database search / MSA construction | Missing | The feature directory is defined, and synthetic tensors keep the notebook runnable. | Add HHblits/JackHMMER/PSI-BLAST runners, cluster-safe job scripts, database paths, e-value/coverage filters, and cached `.a3m`/`.sto` outputs. |
+| MSA-derived 1D and 2D features | Partial | The dataset expects `msa_profile` and `msa_covariance`-like pair tensors. | Implement the exact Senior-style sequence profiles, covariance/coupling summaries, sequence separation features, masking, and normalization from real alignments. |
+| Template search and template pair features | Partial | `template_pair` is part of the tensor contract. | Add dated template search, hit filtering by cutoff, alignment mapping, template distance/orientation features, and leakage auditing. |
+| Residual 2D convolutional network | Partial | The notebook implements a PyTorch residual 2D CNN over `[L, L, C]` pair tensors. | Match the Extended Data Fig. 1 block more closely: dimension-reduction layers, dilated convolution schedule, bypass/residual layout, depth/width, activations, normalization, ensembling, and initialization. |
+| Distogram prediction | Partial | The network predicts symmetric categorical distance logits and trains with pairwise cross-entropy. | Use paper-faithful atom choice, distance range, bin count, masks, label generation, class weighting, and calibration checks. |
+| Torsion-angle / local-geometry heads | Missing | No torsion or local backbone heads are currently trained. | Add torsion labels, angular losses, local structure terms, and their contribution to final coordinate generation. |
+| Potential of mean force from predictions | Partial | Predicted log-probabilities become a differentiable coordinate energy with a reference correction. | Implement the paper-level reference distogram, potential interpolation/smoothing, weighting, long-range emphasis, and all auxiliary energy terms. |
+| Structure realization / optimization | Partial | Coordinates are optimized directly with PyTorch gradients and chain-length regularization. | Reproduce the original realization procedure more faithfully, including torsion-space/backbone constraints, multiple starts, annealing or staged optimization, stereochemical terms, and final relaxation. |
+| CASP13 evaluation | Partial | The notebook has a metric registry and example-protein comparison plots. | Add the exact CASP13 free-modelling domain list, official target/domain parsing, GDT_TS/TM-score/lDDT executables where available, and paper-style aggregate tables. |
+| Comparison to Senior et al. predictions | Partial | The manifest can compare our PDBs with reference structures and optional Senior prediction PDBs. | Materialize official/paper prediction files for all benchmark targets and compute paired deltas across the full benchmark. |
+
+Current interpretation: this notebook is a runnable AF1-like reproduction scaffold, not yet a complete reproduction of every box in Extended Data Fig. 1. The next milestone is to turn the missing data pipeline rows into real cluster jobs, because all downstream architectural and scoring claims depend on having faithful MSA, template, and label tensors.
+'''),
         code(COMMON_SETUP),
         code(r'''
 PAPER = "senior_2020"
