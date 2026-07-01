@@ -1,6 +1,6 @@
 {
   "target_id": "T0986s2",
-  "prediction_path": "results/senior_2020/structures/T0986s2/model_0.pdb",
+  "prediction_path": "/workspace/results/senior_2020/structures/T0986s2/model_0.pdb",
   "truth_path": "data/senior_2020/raw/casp13_targets/T0986s2.pdb",
   "tm_score": null,
   "gdt_ts": null,
