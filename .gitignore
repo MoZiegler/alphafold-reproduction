@@ -66,6 +66,8 @@ env/
 *.tar
 *.tar.gz
 *.tgz
+*.sif
+*.sqsh
 
 # Local paper PDFs
 papers/*.pdf
