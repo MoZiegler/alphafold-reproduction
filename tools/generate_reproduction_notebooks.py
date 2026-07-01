@@ -394,6 +394,32 @@ with torch.no_grad():
     logits = model(batch["pair"][None].to(device()))["distogram_logits"][0]
 coords, hist = optimize_trace(logits, steps=20)
 print(hist[-1], tuple(coords.shape))
+
+def write_ca_trace_pdb(coords: torch.Tensor, path: Path, *, target_id: str, feature_source: str) -> Path:
+    coords_np = coords.detach().cpu().numpy()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"REMARK target_id {target_id}",
+        f"REMARK feature_source {feature_source}",
+        "REMARK CA-only trace produced by the notebook coordinate-optimization smoke path.",
+        "REMARK Do not treat synthetic-feature output as a faithful benchmark prediction.",
+    ]
+    for i, (x, y, z) in enumerate(coords_np, start=1):
+        lines.append(
+            f"ATOM  {i:5d}  CA  ALA A{i:4d}    "
+            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           C"
+        )
+    lines.append("END")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+prediction_target_id = os.environ.get("SENIOR_TARGET_ID", "T0986s2")
+prediction_path = paths["structures"] / prediction_target_id / "model_0.pdb"
+feature_source = "real_feature_npz" if dataset.files else "synthetic_smoke_features"
+write_ca_trace_pdb(coords, prediction_path, target_id=prediction_target_id, feature_source=feature_source)
+print(f"Saved predicted CA trace to {prediction_path}")
+if feature_source == "synthetic_smoke_features":
+    print("WARNING: this PDB came from synthetic smoke features, not real T0986s2 MSA/template features.")
 '''),
         md(r'''
 ## Step 6 - Scoring and improvement loop
@@ -406,8 +432,8 @@ Computationally, we separate metric schemas from metric binaries because cluster
 '''),
         code(r'''
 score_schema = {
-    "target_id": "T0986s2",
-    "prediction_path": "results/senior_2020/structures/T0986s2/model_0.pdb",
+    "target_id": prediction_target_id,
+    "prediction_path": str(prediction_path),
     "truth_path": "data/senior_2020/raw/casp13_targets/T0986s2.pdb",
     "tm_score": None,
     "gdt_ts": None,

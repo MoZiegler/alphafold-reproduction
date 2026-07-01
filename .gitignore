@@ -67,6 +67,9 @@ env/
 *.tar.gz
 *.tgz
 
+# Local paper PDFs
+papers/*.pdf
+
 # Cluster/runtime logs
 *.log
 *.out
