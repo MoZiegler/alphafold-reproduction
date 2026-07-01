@@ -24,6 +24,9 @@ def code(text: str) -> dict:
 COMMON_SETUP = r'''
 from __future__ import annotations
 
+# Shared notebook setup: all three reproductions use the same project layout,
+# deterministic seeds, and cluster-aware device selection. This is not a paper
+# method; it is experiment hygiene so Senior/Jumper/Abramson runs are comparable.
 import json
 import math
 import os
@@ -47,10 +50,12 @@ MODEL_ROOT = PROJECT_ROOT / "models"
 RESULTS_ROOT = PROJECT_ROOT / "results"
 RUNS_ROOT = PROJECT_ROOT / "runs"
 
+# Create the four persistent experiment roots used throughout the notebooks.
 for path in [DATA_ROOT, MODEL_ROOT, RESULTS_ROOT, RUNS_ROOT]:
     path.mkdir(parents=True, exist_ok=True)
 
 def latest_environment_report() -> dict:
+    """Load the newest hardware report produced by Environment_Hardware_Check.ipynb."""
     report_dir = DATA_ROOT / "environment_reports"
     reports = sorted(report_dir.glob("environment_report_*_utc.json"))
     if not reports:
@@ -60,20 +65,24 @@ def latest_environment_report() -> dict:
 ENV_REPORT = latest_environment_report()
 
 def seed_everything(seed: int = 7) -> None:
+    """Set Python/NumPy/PyTorch seeds so smoke runs are reproducible."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
 def device() -> torch.device:
+    """Prefer the first CUDA GPU on the cluster, otherwise fall back to CPU."""
     return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 def write_text(path: Path, text: str) -> Path:
+    """Write a UTF-8 text artifact after creating its parent directory."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
 
 def run(cmd: list[str], *, cwd: Path | None = None, timeout: int = 30, dry_run: bool = True):
+    """Small command runner used for optional external tools and SLURM helpers."""
     print("$", " ".join(shlex.quote(str(x)) for x in cmd))
     if dry_run:
         print("DRY_RUN=True, command was not executed.")
@@ -85,6 +94,7 @@ def run(cmd: list[str], *, cwd: Path | None = None, timeout: int = 30, dry_run: 
     return completed
 
 def gpu_summary() -> str:
+    """Summarize the saved GPU report so notebook output records the hardware."""
     devices = ENV_REPORT.get("torch", {}).get("devices", [])
     if devices:
         first = devices[0]
@@ -182,6 +192,9 @@ MODEL_DIR = MODEL_ROOT / PAPER
 RESULT_DIR = RESULTS_ROOT / PAPER
 RUN_DIR = RUNS_ROOT / PAPER
 
+# Senior et al. / AlphaFold CASP13 stores raw inputs, tensorized features,
+# checkpoints, and scored structures separately. This mirrors the paper's
+# sequence/template -> neural potential -> structure/scoring pipeline.
 paths = {
     "raw": DATA_DIR / "raw",
     "features": DATA_DIR / "features",
@@ -206,6 +219,8 @@ Scientifically, this step defines the counterfactual question: "What could the m
 Computationally, we serialize the boundary as JSON so every later feature file, checkpoint, and score table can point back to the same data contract. Mathematically, it fixes the training and evaluation distributions: training samples are drawn from structures and alignments available before the cutoff, while CASP13 targets remain held out. Without that separation, a high TM-score would not estimate generalization.
 '''),
         code(r'''
+# Benchmark contract for Senior et al. CASP13: these dates/database labels
+# encode the information boundary that prevents template or training leakage.
 contract = {
     "paper": "Senior et al. 2020",
     "benchmark": "CASP13 free modelling domains",
@@ -237,7 +252,16 @@ Computationally, we turn variable biological evidence into dense tensors. The ce
 '''),
         code(r'''
 class SeniorFeatureDataset(Dataset):
+    """Load AF1-style pair-feature tensors for Senior et al.'s distogram model.
+
+    In the paper, MSAs and templates are converted into pairwise inputs for a
+    residual distance-prediction network. The `.npz` path is the faithful route;
+    synthetic tensors exist only so the notebook can smoke-test on a new cluster.
+    """
+
     def __init__(self, feature_dir: Path, synthetic_if_empty: bool = True, n_synthetic: int = 8, length: int = 96, bins: int = 32):
+        """Configure real-feature loading or synthetic smoke-test generation."""
+        # Feature builders should write one `.npz` per target/domain here.
         self.files = sorted(feature_dir.glob("*.npz"))
         self.synthetic_if_empty = synthetic_if_empty
         self.n_synthetic = n_synthetic
@@ -245,13 +269,18 @@ class SeniorFeatureDataset(Dataset):
         self.bins = bins
 
     def __len__(self):
+        """Return real feature count, or synthetic smoke count if no features exist."""
         return len(self.files) if self.files else (self.n_synthetic if self.synthetic_if_empty else 0)
 
     def __getitem__(self, idx):
+        """Return one `[L, L, C]` pair tensor and `[L, L]` distance-bin target."""
         if self.files:
+            # Faithful path: precomputed MSA/template/label tensors from disk.
             arr = np.load(self.files[idx])
             return {k: torch.as_tensor(arr[k]) for k in arr.files}
 
+        # Smoke path: random MSA/profile-like tensors with the same shapes as the
+        # Senior-style pair representation. This validates code, not biology.
         L, B = self.length, self.bins
         msa_profile = F.one_hot(torch.randint(0, 21, (L,)), 21).float()
         msa_covariance = torch.randn(L, L, 16) * 0.1
@@ -281,9 +310,20 @@ Computationally, the model is a 2D residual CNN over the residue-pair image. Res
 '''),
         code(r'''
 class Residual2DBlock(nn.Module):
+    """2D residual convolution block approximating Senior et al.'s AF1 trunk.
+
+    Extended Data Fig. 1 in Senior et al. shows repeated residual/dilated
+    convolutional processing over residue-pair features. This block is a
+    compact PyTorch version of that inductive bias, not yet a parameter-exact
+    reproduction.
+    """
+
     def __init__(self, channels: int, dilation: int = 1):
+        """Create one dilated residual convolution update over pair channels."""
         super().__init__()
         pad = dilation
+        # Normalization -> nonlinearity -> dilated 3x3 convolution mirrors the
+        # paper's idea of propagating local pair-pattern evidence across the map.
         self.net = nn.Sequential(
             nn.GroupNorm(8, channels),
             nn.ReLU(inplace=True),
@@ -294,17 +334,29 @@ class Residual2DBlock(nn.Module):
         )
 
     def forward(self, x):
+        """Apply residual update so deep pair-map processing keeps gradient flow."""
         return x + self.net(x)
 
 
 class SeniorDistogramNet(nn.Module):
+    """AF1-like distogram predictor for Senior et al.'s distance-potential step.
+
+    The paper predicts inter-residue distance distributions, then converts them
+    into potentials. This model implements the distance-distribution head over
+    pair features; torsion and auxiliary heads are still TODOs.
+    """
+
     def __init__(self, pair_dim: int = 66, hidden: int = 128, blocks: int = 16, bins: int = 32):
+        """Create the AF1-like pair trunk and distance-bin prediction head."""
         super().__init__()
+        # 1x1 stem maps heterogeneous biological features into a common channel
+        # space before residual convolutional processing.
         self.stem = nn.Conv2d(pair_dim, hidden, 1)
         self.blocks = nn.ModuleList([Residual2DBlock(hidden, dilation=1 + (i % 4)) for i in range(blocks)])
         self.dist_head = nn.Conv2d(hidden, bins, 1)
 
     def forward(self, pair):
+        """Predict symmetric distance-bin logits for every residue pair."""
         # pair: [B, L, L, C]
         x = pair.permute(0, 3, 1, 2).contiguous()
         x = self.stem(x)
@@ -315,6 +367,7 @@ class SeniorDistogramNet(nn.Module):
         return {"distogram_logits": logits}
 
 model = SeniorDistogramNet().to(device())
+# Shape check: verifies the network emits Senior-style distograms `[B, L, L, bins]`.
 with torch.no_grad():
     out = model(batch["pair"][None].to(device()))
 print(tuple(out["distogram_logits"].shape))
@@ -330,8 +383,11 @@ Computationally, each protein contributes roughly `O(L^2)` residue-pair examples
 '''),
         code(r'''
 def senior_loss(outputs, target_bins):
+    """Cross-entropy over AF1-style distogram bins from Senior et al."""
     logits = outputs["distogram_logits"]
     B, L, _, bins = logits.shape
+    # The diagonal is not a physical inter-residue prediction target, so the
+    # loss uses only one triangle of residue pairs.
     mask = torch.triu(torch.ones(L, L, device=logits.device, dtype=torch.bool), diagonal=1)
     loss = F.cross_entropy(logits[:, mask, :].reshape(-1, bins), target_bins[:, mask].reshape(-1))
     return loss
@@ -339,6 +395,9 @@ def senior_loss(outputs, target_bins):
 loader = DataLoader(dataset, batch_size=1, shuffle=True)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-4)
 model.train()
+# Minimal training loop: reproduces the supervised distogram-learning stage in
+# Senior et al. at smoke scale. Full reproduction replaces this with real
+# CASP-era feature tensors, many epochs, checkpointing, and validation.
 for step, item in enumerate(loader):
     item = {k: v.to(device()) for k, v in item.items()}
     optimizer.zero_grad(set_to_none=True)
@@ -361,6 +420,12 @@ Computationally, we optimize coordinates directly with automatic differentiation
 '''),
         code(r'''
 def distogram_energy(coords, bin_edges, pair_log_probs, reference_log_probs):
+    """Convert Senior-style distance probabilities into a differentiable energy.
+
+    Senior et al. transform predicted distance distributions into potentials of
+    mean force. This function is the notebook's simplified PyTorch analogue:
+    residue-pair distances select log-probability bins, corrected by a reference.
+    """
     distances = torch.cdist(coords, coords).clamp_min(1e-6)
     bin_idx = torch.bucketize(distances, bin_edges[1:-1])
     observed = pair_log_probs.gather(-1, bin_idx[..., None]).squeeze(-1)
@@ -369,6 +434,7 @@ def distogram_energy(coords, bin_edges, pair_log_probs, reference_log_probs):
     return -(observed - reference)[mask].mean()
 
 def optimize_trace(pair_logits, steps: int = 300, lr: float = 0.05):
+    """Optimize a CA trace under the learned AF1-like distance potential."""
     L, _, bins = pair_logits.shape
     dev = pair_logits.device
     bin_edges = torch.linspace(2.0, 22.0, bins + 1, device=dev)
@@ -379,7 +445,9 @@ def optimize_trace(pair_logits, steps: int = 300, lr: float = 0.05):
     history = []
     for step in range(steps):
         opt.zero_grad(set_to_none=True)
+        # Learned distance-potential term from Senior et al.'s core method.
         energy = distogram_energy(coords, bin_edges, pair_log_probs, reference)
+        # Simple chain regularizer: CA-CA spacing should stay near 3.8 A.
         ca = (coords[1:] - coords[:-1]).norm(dim=-1)
         chain_loss = ((ca - 3.8) ** 2).mean()
         loss = energy + 0.05 * chain_loss
@@ -390,12 +458,16 @@ def optimize_trace(pair_logits, steps: int = 300, lr: float = 0.05):
     return coords.detach(), history
 
 model.eval()
+# Inference pass: convert the trained/smoke distogram logits into a coordinate
+# trace, corresponding to the Senior paper's prediction -> potential -> structure
+# realization pathway.
 with torch.no_grad():
     logits = model(batch["pair"][None].to(device()))["distogram_logits"][0]
 coords, hist = optimize_trace(logits, steps=20)
 print(hist[-1], tuple(coords.shape))
 
 def write_ca_trace_pdb(coords: torch.Tensor, path: Path, *, target_id: str, feature_source: str) -> Path:
+    """Write the optimized CA-only trace so scoring cells have a PDB artifact."""
     coords_np = coords.detach().cpu().numpy()
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -416,6 +488,8 @@ def write_ca_trace_pdb(coords: torch.Tensor, path: Path, *, target_id: str, feat
 prediction_target_id = os.environ.get("SENIOR_TARGET_ID", "T0986s2")
 prediction_path = paths["structures"] / prediction_target_id / "model_0.pdb"
 feature_source = "real_feature_npz" if dataset.files else "synthetic_smoke_features"
+# This output is the notebook's predicted structure artifact. For empty feature
+# directories it is intentionally marked as synthetic and should not be benchmarked.
 write_ca_trace_pdb(coords, prediction_path, target_id=prediction_target_id, feature_source=feature_source)
 print(f"Saved predicted CA trace to {prediction_path}")
 if feature_source == "synthetic_smoke_features":
@@ -431,6 +505,9 @@ Scientifically, score choice determines what "reproduction" means. TM-score and 
 Computationally, we separate metric schemas from metric binaries because clusters differ in installed tools. Mathematically, each experiment row is a paired comparison between predicted coordinates `X_hat` and reference coordinates `X`, after alignment or distance-based matching. The registry also prevents enhanced experiments from being mistaken for faithful reproduction.
 '''),
         code(r'''
+# Score schema: records the intended Senior CASP13 comparison contract. The
+# actual external metrics (TM-score/GDT/lDDT) are added later when binaries are
+# available on the cluster.
 score_schema = {
     "target_id": prediction_target_id,
     "prediction_path": str(prediction_path),
@@ -451,6 +528,8 @@ print(json.dumps(experiments, indent=2))
 '''),
         md(SCORING_AND_CLUSTER),
         code(r'''
+# SLURM wrapper: not a paper method, but the cluster execution path for longer
+# Senior-style distogram training runs.
 slurm = paths["slurm"] / "train_senior_distogram.sbatch"
 slurm.write_text(f"""#!/usr/bin/env bash
 #SBATCH --job-name=senior-dist
@@ -480,6 +559,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from urllib.request import urlretrieve
 
+# Comparison manifest locations. This cell connects CASP target structures,
+# our generated structures, and optional Senior/CASP13 prediction files.
 COMPARISON_MANIFEST = DATA_DIR / "comparison_targets.json"
 PLOT_DIR = RESULT_DIR / "plots"
 PLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -499,6 +580,7 @@ OUR_PREDICTION_DIRS = [
 ]
 
 def candidate_structure_files(target_id: str, roots: list[Path]) -> list[Path]:
+    """Find possible PDB/mmCIF files for one CASP target id under known roots."""
     suffixes = ["*.pdb", "*.ent", "*.cif", "*.mmcif"]
     matches = []
     for root in roots:
@@ -512,6 +594,7 @@ def candidate_structure_files(target_id: str, roots: list[Path]) -> list[Path]:
     return sorted(set(p for p in matches if p.is_file()))
 
 def all_structure_files(roots: list[Path]) -> list[Path]:
+    """Collect all structure files under roots for automatic manifest discovery."""
     files = []
     for root in roots:
         if root.exists():
@@ -520,6 +603,7 @@ def all_structure_files(roots: list[Path]) -> list[Path]:
     return sorted(set(p for p in files if p.is_file()))
 
 def rough_target_id(path: Path) -> str:
+    """Infer a target id from a structure filename or target-specific directory."""
     # Prefer the containing target folder when present; otherwise use the stem.
     if path.parent.name not in {"structures", "predictions", "casp13_targets", "truth", "senior_paper_predictions", "raw"}:
         return path.parent.name
@@ -529,6 +613,7 @@ def rough_target_id(path: Path) -> str:
     return stem
 
 def discover_comparison_rows() -> list[dict]:
+    """Auto-create comparison rows when truth and our prediction both exist."""
     truth_files = all_structure_files(TRUTH_DIRS)
     ours_files = all_structure_files(OUR_PREDICTION_DIRS)
     senior_files = all_structure_files(PAPER_PREDICTION_DIRS)
@@ -547,6 +632,7 @@ def discover_comparison_rows() -> list[dict]:
     return rows
 
 template_rows = [
+    # Template manifest row: edit/copy this with real CASP target ids and URLs.
     {
         "target_id": "replace_with_target_id",
         "truth_pdb_id": "optional_rcsb_pdb_id",
@@ -561,9 +647,11 @@ template_rows = [
 write_text(COMPARISON_TEMPLATE, json.dumps(template_rows, indent=2))
 
 if COMPARISON_MANIFEST.exists():
+    # Prefer explicit manifests because benchmark comparisons should be stable.
     comparison_rows = json.loads(COMPARISON_MANIFEST.read_text(encoding="utf-8"))
     print(f"Loaded comparison manifest: {COMPARISON_MANIFEST}")
 else:
+    # Fallback discovery helps smoke-test local folder layouts.
     comparison_rows = discover_comparison_rows()
     if comparison_rows:
         write_text(COMPARISON_MANIFEST, json.dumps(comparison_rows, indent=2))
@@ -586,6 +674,7 @@ print(json.dumps(comparison_rows, indent=2))
 '''),
         code(r'''
 def download_if_missing(url: str | None, destination: Path) -> bool:
+    """Download an optional comparison file unless it already exists locally."""
     if not url or str(url).startswith("optional_"):
         return False
     if destination.exists() and destination.stat().st_size > 0:
@@ -596,12 +685,14 @@ def download_if_missing(url: str | None, destination: Path) -> bool:
     return destination.exists() and destination.stat().st_size > 0
 
 def download_rcsb_pdb_if_missing(pdb_id: str | None, destination: Path) -> bool:
+    """Fetch an experimental reference structure from RCSB by PDB id."""
     if not pdb_id or str(pdb_id).startswith("optional_"):
         return False
     pdb_id = pdb_id.strip().lower()
     return download_if_missing(f"https://files.rcsb.org/download/{pdb_id}.pdb", destination)
 
 def materialize_comparison_inputs(rows: list[dict]) -> list[dict]:
+    """Resolve/download truth, ours, and Senior paper-prediction paths."""
     materialized = []
     for row in rows:
         row = dict(row)
@@ -611,12 +702,15 @@ def materialize_comparison_inputs(rows: list[dict]) -> list[dict]:
         senior_path = Path(row.get("senior_paper_pdb") or (DATA_DIR / "senior_paper_predictions" / f"{target_id}.pdb"))
 
         if not truth_path.exists():
+            # Truth structures are experimental references, not model outputs.
             download_rcsb_pdb_if_missing(row.get("truth_pdb_id"), truth_path)
         if not truth_path.exists():
             download_if_missing(row.get("truth_url"), truth_path)
         if not ours_path.exists():
+            # Usually empty: our prediction is generated by the notebook/training run.
             download_if_missing(row.get("ours_url"), ours_path)
         if not senior_path.exists():
+            # Optional CASP13/Senior prediction used for paired comparison.
             download_if_missing(row.get("senior_paper_url"), senior_path)
 
         row["truth_pdb"] = str(truth_path)
@@ -635,6 +729,7 @@ else:
 '''),
         code(r'''
 def parse_ca_pdb(path: Path):
+    """Parse C-alpha coordinates from PDB text for lightweight scoring plots."""
     rows = []
     for line in path.read_text(errors="ignore").splitlines():
         if not line.startswith(("ATOM  ", "HETATM")):
@@ -656,6 +751,7 @@ def parse_ca_pdb(path: Path):
     return rows
 
 def paired_ca_coords(reference_path: Path, prediction_path: Path):
+    """Pair reference and prediction CA atoms by residue key, falling back by order."""
     ref_rows = parse_ca_pdb(reference_path)
     pred_rows = parse_ca_pdb(prediction_path)
     ref_by_key = {r["key"]: r["coord"] for r in ref_rows}
@@ -669,6 +765,7 @@ def paired_ca_coords(reference_path: Path, prediction_path: Path):
     return np.stack([r["coord"] for r in ref_rows[:n]]), np.stack([r["coord"] for r in pred_rows[:n]]), [r["key"] for r in ref_rows[:n]]
 
 def kabsch_align(mobile: np.ndarray, target: np.ndarray):
+    """Rigidly align predicted coordinates to reference coordinates for RMSD plots."""
     mobile_center = mobile.mean(axis=0)
     target_center = target.mean(axis=0)
     X = mobile - mobile_center
@@ -680,10 +777,16 @@ def kabsch_align(mobile: np.ndarray, target: np.ndarray):
     return X @ R + target_center
 
 def distance_matrix(coords: np.ndarray):
+    """Compute all-pairs Euclidean distances used for contact/distance-map metrics."""
     diff = coords[:, None, :] - coords[None, :, :]
     return np.sqrt((diff * diff).sum(axis=-1))
 
 def structure_metrics(reference: np.ndarray, prediction: np.ndarray):
+    """Compute lightweight CASP-like comparison metrics for notebook diagnostics.
+
+    TM-like and GDT-like scores here are approximations for rapid iteration.
+    Faithful CASP13 reporting should later call official/standard binaries.
+    """
     aligned = kabsch_align(prediction, reference)
     per_residue_error = np.linalg.norm(aligned - reference, axis=-1)
     rmsd = float(np.sqrt(np.mean(per_residue_error ** 2)))
@@ -713,6 +816,7 @@ def structure_metrics(reference: np.ndarray, prediction: np.ndarray):
     }
 
 def resolve_comparison_paths(row: dict):
+    """Resolve manifest paths and fallback-discover files for one target row."""
     target_id = row["target_id"]
     truth = Path(row.get("truth_pdb", ""))
     ours = Path(row.get("ours_pdb", ""))
@@ -729,6 +833,7 @@ def resolve_comparison_paths(row: dict):
     return truth, ours, senior
 '''),
         code(r'''
+# Build one row per available target/method and keep payloads for plotting.
 comparison_records = []
 comparison_payloads = {}
 
@@ -777,6 +882,7 @@ else:
 '''),
         code(r'''
 def plot_ca_trace(ax, coords: np.ndarray, title: str, color: str):
+    """Draw a 3D CA trace for visual fold comparison in Matplotlib."""
     ax.plot(coords[:, 0], coords[:, 1], coords[:, 2], color=color, linewidth=1.6)
     ax.scatter(coords[0, 0], coords[0, 1], coords[0, 2], color=color, s=30, marker="o")
     ax.scatter(coords[-1, 0], coords[-1, 1], coords[-1, 2], color=color, s=30, marker="x")
@@ -786,6 +892,7 @@ def plot_ca_trace(ax, coords: np.ndarray, title: str, color: str):
     ax.set_zlabel("z")
 
 def plot_target_comparison(target_id: str):
+    """Plot structure trace, distance maps, and per-residue errors for one target."""
     methods = [m for (tid, m) in comparison_payloads if tid == target_id]
     if not methods:
         print(f"No payloads for {target_id}")
@@ -837,11 +944,14 @@ def plot_target_comparison(target_id: str):
     plt.show()
 
 if not metrics_df.empty:
+    # Generate per-target plots only after complete truth+prediction pairs exist.
     for target_id in metrics_df["target_id"].unique():
         plot_target_comparison(target_id)
 '''),
         code(r'''
 if not metrics_df.empty:
+    # Aggregate metric plots compare our AF1-like reproduction with Senior/CASP13
+    # prediction files when those optional paper outputs are available.
     score_cols = ["rmsd_ca", "tm_like", "gdt_ts_like", "distance_mae_long_range", "contact_precision_8A", "contact_recall_8A"]
     available_score_cols = [c for c in score_cols if c in metrics_df.columns]
     for metric in available_score_cols:
@@ -900,6 +1010,9 @@ MODEL_DIR = MODEL_ROOT / PAPER
 RESULT_DIR = RESULTS_ROOT / PAPER
 RUN_DIR = RUNS_ROOT / PAPER
 
+# Jumper et al. / AlphaFold2 separates raw databases, precomputed features,
+# checkpoints, structure predictions, and metrics. This layout mirrors the
+# paper's MSA/template -> Evoformer -> structure module -> recycling workflow.
 paths = {
     "raw": DATA_DIR / "raw",
     "features": DATA_DIR / "features",
@@ -923,6 +1036,7 @@ Scientifically, AF2's CASP14 result was a generalization claim under a temporal 
 Computationally, the contract becomes metadata attached to every feature tensor and checkpoint. Mathematically, it fixes the train/test split and the allowed conditioning variables, so score changes can be attributed to model or input changes instead of hidden leakage.
 '''),
         code(r'''
+# CASP14 information-boundary metadata for faithful AF2-style reproduction.
 contract = {
     "paper": "Jumper et al. 2021",
     "benchmark": "CASP14 monomer targets",
@@ -944,7 +1058,16 @@ Computationally, we keep two tensors: `msa` with shape `[N_msa, L, C_msa]` and `
 '''),
         code(r'''
 class AF2FeatureDataset(Dataset):
+    """Load AF2-style MSA/pair tensors for Jumper et al.'s Evoformer pipeline.
+
+    In AlphaFold2, the MSA representation and pair representation are processed
+    jointly. Real `.npz` files should contain those tensors; synthetic examples
+    only verify notebook execution and tensor shapes.
+    """
+
     def __init__(self, feature_dir: Path, synthetic_if_empty: bool = True, n_synthetic: int = 6, n_msa: int = 32, length: int = 96):
+        """Configure real AF2 feature loading or synthetic smoke examples."""
+        # Feature builders should write one CASP14-style target/domain file here.
         self.files = sorted(feature_dir.glob("*.npz"))
         self.synthetic_if_empty = synthetic_if_empty
         self.n_synthetic = n_synthetic
@@ -952,12 +1075,17 @@ class AF2FeatureDataset(Dataset):
         self.length = length
 
     def __len__(self):
+        """Return real feature count, or synthetic smoke count if empty."""
         return len(self.files) if self.files else (self.n_synthetic if self.synthetic_if_empty else 0)
 
     def __getitem__(self, idx):
+        """Return one MSA tensor, pair tensor, and CA supervision trace."""
         if self.files:
+            # Faithful path: MSA/template/label tensors produced upstream.
             arr = np.load(self.files[idx])
             return {k: torch.as_tensor(arr[k]) for k in arr.files}
+        # Smoke path: random MSA tokens and relative-position pair features.
+        # This approximates AF2 tensor shapes, not AF2's real feature values.
         N, L = self.n_msa, self.length
         msa = F.one_hot(torch.randint(0, 22, (N, L)), 22).float()
         residue_index = torch.arange(L)
@@ -987,10 +1115,23 @@ Computationally, this compact version uses attention and feed-forward updates ra
 '''),
         code(r'''
 class EvoformerLiteBlock(nn.Module):
+    """Compact stand-in for Jumper et al.'s Evoformer block.
+
+    The real Evoformer combines MSA attention, outer-product/communication into
+    the pair track, triangle updates, and pair attention. This lite block keeps
+    the key two-track message-passing idea while staying small enough for a
+    notebook reproduction scaffold.
+    """
+
     def __init__(self, msa_dim: int, pair_dim: int, heads: int = 4):
+        """Create simplified MSA attention and pair-update sublayers."""
         super().__init__()
+        # MSA row attention corresponds to AF2's sequence-alignment information
+        # flow along residues for each homologous sequence.
         self.msa_attn = nn.MultiheadAttention(msa_dim, heads, batch_first=True)
         self.msa_ff = nn.Sequential(nn.LayerNorm(msa_dim), nn.Linear(msa_dim, 4 * msa_dim), nn.GELU(), nn.Linear(4 * msa_dim, msa_dim))
+        # The summary-to-pair projection is a small analogue of AF2's
+        # outer-product mean communication from MSA to pair representation.
         self.outer = nn.Linear(msa_dim, pair_dim)
         self.pair_conv = nn.Sequential(
             nn.LayerNorm(pair_dim),
@@ -1000,6 +1141,7 @@ class EvoformerLiteBlock(nn.Module):
         )
 
     def forward(self, msa, pair):
+        """Update MSA and pair tracks with simplified Evoformer message passing."""
         B, N, L, C = msa.shape
         msa_flat = msa.reshape(B * N, L, C)
         attn, _ = self.msa_attn(msa_flat, msa_flat, msa_flat, need_weights=False)
@@ -1008,23 +1150,35 @@ class EvoformerLiteBlock(nn.Module):
         summary = msa.mean(dim=1)
         pair_update = self.outer(summary[:, :, None, :] + summary[:, None, :, :])
         pair = pair + pair_update
+        # Pair update stands in for the real triangle/pair stack.
         pair = pair + self.pair_conv(pair)
         return msa, pair
 
 
 class AF2Lite(nn.Module):
+    """Small AF2-like model with MSA/pair trunk, coordinate head, and pLDDT head."""
+
     def __init__(self, msa_in: int = 22, pair_in: int = 65, msa_dim: int = 128, pair_dim: int = 128, blocks: int = 6):
+        """Create embeddings, Evoformer-lite trunk, structure head, and confidence head."""
         super().__init__()
+        # Input embeddings map discrete sequence/MSA and pair features into the
+        # continuous representation space used by Evoformer-like blocks.
         self.msa_embed = nn.Linear(msa_in, msa_dim)
         self.pair_embed = nn.Linear(pair_in, pair_dim)
         self.blocks = nn.ModuleList([EvoformerLiteBlock(msa_dim, pair_dim) for _ in range(blocks)])
+        # Structure head placeholder: AF2's real structure module predicts
+        # frames/atoms; this lite head emits CA coordinates for smoke training.
         self.coord_head = nn.Sequential(nn.LayerNorm(pair_dim + msa_dim), nn.Linear(pair_dim + msa_dim, 256), nn.GELU(), nn.Linear(256, 3))
+        # pLDDT-style confidence head, matching the AF2 paper's confidence idea.
         self.plddt_head = nn.Sequential(nn.LayerNorm(msa_dim), nn.Linear(msa_dim, 50))
 
     def forward(self, msa, pair, recycles: int = 1):
+        """Run Evoformer-lite blocks for one or more recycling passes."""
         msa = self.msa_embed(msa)
         pair = self.pair_embed(pair)
         for _ in range(recycles):
+            # Recycling scaffold: repeated processing approximates AF2's iterative
+            # refinement, though it does not yet inject previous coordinates.
             for block in self.blocks:
                 msa, pair = block(msa, pair)
         single = msa[:, 0]
@@ -1034,6 +1188,7 @@ class AF2Lite(nn.Module):
         return {"ca": ca, "plddt_logits": plddt_logits, "pair": pair, "single": single}
 
 model = AF2Lite().to(device())
+# Shape check for AF2-like outputs: CA coordinates, confidence logits, pair/single states.
 with torch.no_grad():
     out = model(sample["msa"][None].to(device()), sample["pair"][None].to(device()))
 print({k: tuple(v.shape) for k, v in out.items() if torch.is_tensor(v)})
@@ -1049,11 +1204,13 @@ Computationally, `torch.cdist` gives a differentiable distance matrix, and smoot
 '''),
         code(r'''
 def pairwise_distance_loss(pred_ca, true_ca):
+    """Rotation/translation-invariant geometry loss for AF2-lite coordinates."""
     pred_d = torch.cdist(pred_ca, pred_ca)
     true_d = torch.cdist(true_ca, true_ca)
     return F.smooth_l1_loss(pred_d, true_d)
 
 def af2_lite_loss(outputs, true_ca):
+    """Minimal AF2-style training loss: pair geometry plus CA bond regularity."""
     geom = pairwise_distance_loss(outputs["ca"], true_ca)
     bond = ((outputs["ca"][:, 1:] - outputs["ca"][:, :-1]).norm(dim=-1) - 3.8).pow(2).mean()
     return geom + 0.05 * bond
@@ -1061,6 +1218,7 @@ def af2_lite_loss(outputs, true_ca):
 loader = DataLoader(dataset, batch_size=1, shuffle=True)
 opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
 model.train()
+# Smoke-scale supervised training loop for the AF2-lite trunk/structure head.
 for step, item in enumerate(loader):
     item = {k: v.to(device()) for k, v in item.items()}
     opt.zero_grad(set_to_none=True)
@@ -1084,6 +1242,8 @@ Computationally, recycling trades runtime and memory for refinement. Mathematica
 '''),
         code(r'''
 model.eval()
+# Recycling comparison: AF2 uses recycling for iterative refinement; this cell
+# checks that the lite model can execute different recycle counts.
 with torch.no_grad():
     item = {k: v[None].to(device()) for k, v in dataset[0].items()}
     one = model(item["msa"], item["pair"], recycles=1)["ca"]
@@ -1100,6 +1260,8 @@ Scientifically, improvement claims need paired comparisons: the same targets, th
 Computationally, the registry is a small experiment database. Mathematically, each row defines a function from inputs to structures plus a metric vector; later we can compute deltas, confidence intervals, per-target wins/losses, and failure clusters.
 '''),
         code(r'''
+# Experiment registry distinguishes faithful CASP14-boundary rows from enhanced
+# rows that intentionally change AF2 inputs or inference behavior.
 experiments = [
     {"name": "af2_lite_faithful_casp14", "faithful": True, "change": "own Evoformer-lite, CASP14 boundary"},
     {"name": "af2_lite_triangle_updates", "faithful": True, "change": "add triangle multiplication and attention"},
@@ -1111,6 +1273,7 @@ print(json.dumps(experiments, indent=2))
 '''),
         md(SCORING_AND_CLUSTER),
         code(r'''
+# SLURM wrapper for longer AF2-lite notebook executions on the GPU cluster.
 slurm = paths["slurm"] / "train_af2_lite.sbatch"
 slurm.write_text(f"""#!/usr/bin/env bash
 #SBATCH --job-name=af2-lite
@@ -1159,6 +1322,9 @@ MODEL_DIR = MODEL_ROOT / PAPER
 RESULT_DIR = RESULTS_ROOT / PAPER
 RUN_DIR = RUNS_ROOT / PAPER
 
+# Abramson et al. / AlphaFold3 expands the data surface beyond proteins:
+# ligands, complexes, benchmarks, predictions, and metrics each need explicit
+# storage because the paper evaluates multimolecular interactions.
 paths = {
     "raw": DATA_DIR / "raw",
     "features": DATA_DIR / "features",
@@ -1189,6 +1355,9 @@ from rdkit.Chem import AllChem
 
 print("RDKit version:", rdkit.__version__)
 
+# Atom/bond vocabularies for the AF3-style ligand featurization layer. In
+# Abramson et al., small molecules are represented with chemistry-aware atom
+# and bond information rather than residue-only sequence tokens.
 ATOM_TYPES = ["C", "N", "O", "S", "P", "F", "Cl", "Br", "I", "B", "H", "OTHER"]
 BOND_TYPES = [
     Chem.BondType.SINGLE,
@@ -1198,22 +1367,32 @@ BOND_TYPES = [
 ]
 
 def one_hot_index(value, choices):
+    """Encode categorical chemistry values, using the final bin as fallback."""
     idx = choices.index(value) if value in choices else len(choices) - 1
     out = torch.zeros(len(choices))
     out[idx] = 1.0
     return out
 
 def featurize_ligand_smiles(smiles: str, seed: int = 7):
+    """Convert SMILES into AF3-style ligand atom, bond, and conformer features.
+
+    This reproduces the AF3 paper's need for chemistry-aware ligand inputs using
+    RDKit primitives: sanitization/parsing, hydrogens, bonds, aromaticity,
+    formal charge, and an initial 3D conformer.
+    """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         raise ValueError(f"Could not parse SMILES: {smiles}")
     mol = Chem.AddHs(mol)
+    # RDKit conformer generation supplies initial ligand geometry for the
+    # notebook's toy complex; real AF3 reproduction should use curated SDF/mmCIF.
     status = AllChem.EmbedMolecule(mol, randomSeed=seed)
     if status == 0:
         AllChem.UFFOptimizeMolecule(mol, maxIters=200)
     conf = mol.GetConformer()
     atom_features, coords = [], []
     for atom in mol.GetAtoms():
+        # Atom features encode the chemical constraints that govern valid poses.
         symbol = atom.GetSymbol()
         atom_features.append(torch.cat([
             one_hot_index(symbol, ATOM_TYPES),
@@ -1228,6 +1407,8 @@ def featurize_ligand_smiles(smiles: str, seed: int = 7):
         coords.append([p.x, p.y, p.z])
     edge_index, edge_attr = [], []
     for bond in mol.GetBonds():
+        # Store both bond directions so later graph/message-passing code can
+        # consume ligand connectivity without assuming undirected edges.
         i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
         feat = one_hot_index(bond.GetBondType(), BOND_TYPES)
         edge_index += [[i, j], [j, i]]
@@ -1262,22 +1443,36 @@ Computationally, this step concatenates protein residue tokens and ligand atom t
 AA = "ACDEFGHIKLMNPQRSTVWYX"
 
 def tokenize_complex(sequence: str, ligand_smiles: str):
+    """Create AF3-like single/pair tensors for a protein-ligand complex.
+
+    Abramson et al. use a unified token system for proteins, nucleic acids,
+    ligands, ions, and modifications. This simplified tokenizer concatenates
+    protein residue tokens with RDKit ligand atom tokens and adds pair features.
+    """
     protein_tokens = F.one_hot(torch.tensor([AA.index(a) if a in AA else AA.index("X") for a in sequence]), len(AA)).float()
     lig = featurize_ligand_smiles(ligand_smiles)
+    # Pad/truncate ligand atom features so protein residues and ligand atoms can
+    # share one single-token tensor.
     ligand_tokens = F.pad(lig["atom_features"], (0, protein_tokens.shape[-1] - lig["atom_features"].shape[-1])) if lig["atom_features"].shape[-1] < protein_tokens.shape[-1] else lig["atom_features"][:, :protein_tokens.shape[-1]]
     single = torch.cat([protein_tokens, ligand_tokens], dim=0)
     molecule_id = torch.cat([torch.zeros(len(protein_tokens), dtype=torch.long), torch.ones(len(ligand_tokens), dtype=torch.long)])
     L = single.shape[0]
     pair = torch.zeros(L, L, 8)
     idx = torch.arange(L)
+    # Pair channels encode sequence separation, same/different molecule, and
+    # ligand bond adjacency: a small analogue of AF3's rich pair representation.
     pair[..., 0] = (idx[:, None] - idx[None, :]).abs().float().clamp(max=32) / 32
     pair[..., 1] = (molecule_id[:, None] == molecule_id[None, :]).float()
     pair[..., 2] = (molecule_id[:, None] != molecule_id[None, :]).float()
     offset = len(protein_tokens)
     for e in lig["edge_index"].T:
+        # Ligand bond connectivity is written into pair features after offsetting
+        # ligand atom indices behind the protein residue tokens.
         i, j = int(e[0]) + offset, int(e[1]) + offset
         pair[i, j, 3] = 1.0
     true_coords = torch.cat([
+        # Toy coordinates: protein as a noisy CA trace and ligand conformer offset
+        # nearby. Real AF3 reproduction should use experimental complex geometry.
         torch.cumsum(torch.randn(len(protein_tokens), 3) * 0.4 + torch.tensor([3.8, 0.0, 0.0]), dim=0),
         lig["atom_coords"] + torch.tensor([0.0, 8.0, 0.0]),
     ], dim=0)
@@ -1297,35 +1492,60 @@ Computationally, single-token attention mixes information across the complex, wh
 '''),
         code(r'''
 class PairformerLiteBlock(nn.Module):
+    """Compact Pairformer-style update block inspired by Abramson et al. AF3.
+
+    AF3 replaces AF2's Evoformer with Pairformer-style single/pair processing
+    for multimolecular systems. This block keeps single-token attention and
+    explicit pair updates, but omits many production details.
+    """
+
     def __init__(self, single_dim: int, pair_dim: int, heads: int = 4):
+        """Create single-token attention and pair-conditioned update layers."""
         super().__init__()
+        # Single attention lets protein residues and ligand atoms exchange
+        # context across the whole complex.
         self.single_attn = nn.MultiheadAttention(single_dim, heads, batch_first=True)
         self.pair_to_bias = nn.Linear(pair_dim, heads)
         self.single_ff = nn.Sequential(nn.LayerNorm(single_dim), nn.Linear(single_dim, 4 * single_dim), nn.GELU(), nn.Linear(4 * single_dim, single_dim))
         self.pair_ff = nn.Sequential(nn.LayerNorm(pair_dim), nn.Linear(pair_dim + single_dim, 4 * pair_dim), nn.GELU(), nn.Linear(4 * pair_dim, pair_dim))
 
     def forward(self, single, pair):
+        """Update single and pair representations for one Pairformer-lite layer."""
         attn, _ = self.single_attn(single, single, single, need_weights=False)
         single = single + attn
         single = single + self.single_ff(single)
         pair_single = single[:, :, None, :] + single[:, None, :, :]
+        # Pair update conditions relational state on the current token states.
         pair = pair + self.pair_ff(torch.cat([pair, pair_single], dim=-1))
         return single, pair
 
 
 class AF3DiffusionLite(nn.Module):
+    """AF3-like Pairformer plus coordinate-denoising head.
+
+    Abramson et al. use diffusion-style coordinate generation for complexes.
+    This model predicts coordinate noise from noisy coordinates plus single/pair
+    biomolecular features.
+    """
+
     def __init__(self, token_in: int = 21, pair_in: int = 8, single_dim: int = 128, pair_dim: int = 128, blocks: int = 6):
+        """Create AF3-lite embeddings, Pairformer trunk, and denoising heads."""
         super().__init__()
         self.single_embed = nn.Linear(token_in, single_dim)
         self.pair_embed = nn.Linear(pair_in, pair_dim)
+        # Time embedding conditions the denoiser on the current diffusion noise level.
         self.time_embed = nn.Sequential(nn.Linear(1, single_dim), nn.SiLU(), nn.Linear(single_dim, single_dim))
         self.blocks = nn.ModuleList([PairformerLiteBlock(single_dim, pair_dim) for _ in range(blocks)])
         self.noise_head = nn.Sequential(nn.LayerNorm(single_dim + pair_dim), nn.Linear(single_dim + pair_dim, 256), nn.SiLU(), nn.Linear(256, 3))
+        # Confidence head placeholder mirrors AF3's confidence/scoring outputs.
         self.confidence_head = nn.Sequential(nn.LayerNorm(single_dim), nn.Linear(single_dim, 50))
 
     def forward(self, single, pair, noisy_coords, t):
+        """Predict denoising vectors for all complex tokens at noise level `t`."""
         single = self.single_embed(single) + self.time_embed(t[:, None, None].float())
         pair = self.pair_embed(pair)
+        # Current noisy inter-token distances are fed into the pair state, giving
+        # the denoiser access to the geometry it is refining.
         coord_dist = torch.cdist(noisy_coords, noisy_coords)[..., None] / 20.0
         pair = pair + F.pad(coord_dist, (0, pair.shape[-1] - 1))
         for block in self.blocks:
@@ -1337,6 +1557,7 @@ class AF3DiffusionLite(nn.Module):
 
 model = AF3DiffusionLite().to(device())
 item = {k: v[None].to(device()) for k, v in complex_features.items() if k in ["single", "pair", "true_coords"]}
+# Shape check for AF3-lite denoising outputs on a toy protein-ligand complex.
 with torch.no_grad():
     t = torch.tensor([0.5], device=device())
     noisy = item["true_coords"] + torch.randn_like(item["true_coords"]) * t[:, None, None]
@@ -1354,7 +1575,12 @@ Computationally, each training example draws random noise and a noise scale, whi
 '''),
         code(r'''
 class AF3ToyComplexDataset(Dataset):
+    """Tiny RDKit-backed protein-ligand dataset for AF3 diffusion smoke training."""
+
     def __init__(self, n: int = 8):
+        """Build a small list of toy protein-ligand examples."""
+        # Toy complexes cover several ligand graph shapes so RDKit featurization,
+        # tokenization, and diffusion batches exercise different code paths.
         self.rows = [
             ("MSTNPKPQRKTKRNTNRRPQDVKFPGG", "CCO"),
             ("ACDEFGHIKLMNPQRSTVWY", "CC(=O)O"),
@@ -1364,13 +1590,16 @@ class AF3ToyComplexDataset(Dataset):
         self.rows = self.rows[:n]
 
     def __len__(self):
+        """Return number of toy complexes."""
         return len(self.rows)
 
     def __getitem__(self, idx):
+        """Tokenize one protein-ligand row into AF3-like tensors."""
         sequence, smiles = self.rows[idx]
         return tokenize_complex(sequence, smiles)
 
 def collate_one(batch):
+    """Batch-size-one collator until variable-length padding/masking is added."""
     # Keep batch size 1 until padding/masking is added.
     return {k: v[None] for k, v in batch[0].items()}
 
@@ -1378,10 +1607,13 @@ toy = AF3ToyComplexDataset()
 loader = DataLoader(toy, batch_size=1, shuffle=True, collate_fn=collate_one)
 opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
 model.train()
+# Diffusion training loop: sample noise level, corrupt coordinates, and train the
+# model to predict the injected noise, matching the AF3-style denoising objective.
 for step, item in enumerate(loader):
     item = {k: v.to(device()) for k, v in item.items()}
     t = torch.rand(item["true_coords"].shape[0], device=device()).clamp_min(0.05)
     noise = torch.randn_like(item["true_coords"])
+    # Forward noising process: x_t = x_0 + t * epsilon.
     noisy = item["true_coords"] + noise * t[:, None, None]
     opt.zero_grad(set_to_none=True)
     outputs = model(item["single"], item["pair"], noisy, t)
@@ -1406,11 +1638,14 @@ Computationally, the sampler runs the neural network several times while reducin
         code(r'''
 @torch.no_grad()
 def sample_complex(model, features, steps: int = 20):
+    """Generate complex coordinates by iterative AF3-lite denoising."""
     model.eval()
     single = features["single"][None].to(device())
     pair = features["pair"][None].to(device())
     coords = torch.randn_like(features["true_coords"][None].to(device()))
     for s in reversed(range(steps)):
+        # Euler-style reverse diffusion step. This is intentionally simple; later
+        # versions should add better schedulers, multiple samples, and reranking.
         t = torch.full((1,), (s + 1) / steps, device=device())
         pred_noise = model(single, pair, coords, t)["pred_noise"]
         coords = coords - pred_noise / steps
@@ -1429,6 +1664,8 @@ Scientifically, AF3's claim is about biomolecular interactions, so each molecula
 Computationally, we store a benchmark manifest that maps each target to required input files and metric families. Mathematically, the final evaluation is a vector-valued score, not a scalar: global fold terms, local/interface terms, ligand RMSD, clash/validity terms, and calibration terms should be tracked separately before any aggregate is reported.
 '''),
         code(r'''
+# Benchmark manifest records the multimolecular score surface required for AF3:
+# protein fold quality, ligand pose, interface quality, clashes, and chemistry.
 benchmark_manifest = [
     {
         "target_id": "protein_ligand_example",
@@ -1464,6 +1701,8 @@ Scientifically, the improvement loop tests hypotheses about what limits performa
 Computationally, each experiment is a reproducible transformation of data, model, sampler, or scorer. Mathematically, we compare metric vectors per target and per molecule class, looking for consistent positive deltas rather than a single averaged number that could hide regressions.
 '''),
         code(r'''
+# Experiment registry separates faithful AF3-lite reproduction attempts from
+# enhanced sampling, ligand-state, and chemistry-loss experiments.
 experiments = [
     {"name": "af3_lite_faithful_single_sample", "faithful": True, "change": "own Pairformer/diffusion baseline"},
     {"name": "af3_lite_8_sample_rerank", "faithful": False, "change": "more diffusion samples plus confidence/validity reranking"},
@@ -1475,6 +1714,7 @@ print(json.dumps(experiments, indent=2))
 '''),
         md(SCORING_AND_CLUSTER),
         code(r'''
+# SLURM wrapper for longer AF3-lite notebook executions on the GPU cluster.
 slurm = paths["slurm"] / "train_af3_lite.sbatch"
 slurm.write_text(f"""#!/usr/bin/env bash
 #SBATCH --job-name=af3-lite
