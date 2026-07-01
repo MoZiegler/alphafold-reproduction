@@ -9,3 +9,8 @@ tqdm
 ipywidgets
 ipykernel
 rdkit
+biopython
+py3Dmol
+pymsaviz
+logomaker
+nglview   # optional, richer but sometimes fussier on remote Jupyter
